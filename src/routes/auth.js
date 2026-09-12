@@ -1,92 +1,175 @@
-const express  = require('express');
-const bcrypt   = require('bcryptjs');
-const jwt      = require('jsonwebtoken');
-const pool     = require('../db/pool');
-const auth     = require('../middleware/auth');
-const router   = express.Router();
+const express    = require('express');
+const router     = express.Router();
+const bcrypt     = require('bcryptjs');
+const jwt        = require('jsonwebtoken');
+const pool       = require('../db/pool');
 
-// ── POST /api/auth/login ────────────────────────────────────────────────────
+const JWT_SECRET = process.env.JWT_SECRET || 'societypro-secret-2025';
+
+// ── POST /api/auth/login ───────────────────────────────────────────────────────
 router.post('/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ success:false, message:'Email and password are required' });
+  }
+
+  console.log(`🔐 Login attempt: ${email}`);
+
   try {
-    const { email, password } = req.body;
-    if (!email || !password)
-      return res.status(400).json({ success: false, message: 'Email and password required.' });
+    let user    = null;
+    let society = null;
+    let role    = 'admin';
 
-    const { rows } = await pool.query('SELECT * FROM admins WHERE email = $1', [email]);
-    if (!rows.length)
-      return res.status(401).json({ success: false, message: 'Invalid email or password.' });
+    // ── Check ALL possible tables ─────────────────────────────────────────────
 
-    const admin = rows[0];
-    const match = await bcrypt.compare(password, admin.password);
-    if (!match)
-      return res.status(401).json({ success: false, message: 'Invalid email or password.' });
+    // 1. Check admins table
+    try {
+      const r = await pool.query(
+        `SELECT a.*, s.name as society_name, s.id as soc_id, s.plan, s.total_flats, s.city, s.state
+         FROM admins a
+         LEFT JOIN societies s ON a.society_id = s.id
+         WHERE LOWER(a.email) = LOWER($1) LIMIT 1`,
+        [email.trim()]
+      );
+      if (r.rows.length > 0) {
+        user    = r.rows[0];
+        role    = user.role || 'secretary';
+        society = { id: user.soc_id, name: user.society_name, plan: user.plan, total_flats: user.total_flats, city: user.city, state: user.state };
+        console.log(`✅ Found in admins table`);
+      }
+    } catch(e) { console.log('admins check:', e.message); }
 
+    // 2. Check tenants table with admin role
+    if (!user) {
+      try {
+        const r = await pool.query(
+          `SELECT * FROM tenants WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+          [email.trim()]
+        );
+        if (r.rows.length > 0) {
+          user = r.rows[0];
+          role = user.role || 'admin';
+          console.log(`✅ Found in tenants table, role: ${role}`);
+        }
+      } catch(e) { console.log('tenants check:', e.message); }
+    }
+
+    // 3. Check super_admins table
+    if (!user) {
+      try {
+        const r = await pool.query(
+          `SELECT * FROM super_admins WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+          [email.trim()]
+        );
+        if (r.rows.length > 0) {
+          user = r.rows[0];
+          role = 'superadmin';
+          console.log(`✅ Found in super_admins table`);
+        }
+      } catch(e) { console.log('super_admins check:', e.message); }
+    }
+
+    // 4. User not found anywhere
+    if (!user) {
+      console.log(`❌ User not found: ${email}`);
+      return res.status(401).json({
+        success: false,
+        message: 'No account found with this email. Please register first at app.societyproapp.com/register'
+      });
+    }
+
+    // ── Verify Password ───────────────────────────────────────────────────────
+    let passwordMatch = false;
+
+    // Try bcrypt
+    try {
+      if (user.password && user.password.startsWith('$2')) {
+        passwordMatch = await bcrypt.compare(password, user.password);
+        console.log(`bcrypt match: ${passwordMatch}`);
+      }
+    } catch(e) { console.log('bcrypt error:', e.message); }
+
+    // Plain text fallback (seed data)
+    if (!passwordMatch && user.password === password) {
+      passwordMatch = true;
+      console.log(`plain text match: true`);
+    }
+
+    if (!passwordMatch) {
+      console.log(`❌ Password mismatch for: ${email}`);
+      return res.status(401).json({
+        success: false,
+        message: 'Incorrect password. Please try again.'
+      });
+    }
+
+    // ── Get Society if not found ──────────────────────────────────────────────
+    if (!society || !society.name) {
+      if (user.society_id) {
+        try {
+          const r = await pool.query('SELECT * FROM societies WHERE id = $1 LIMIT 1', [user.society_id]);
+          if (r.rows.length > 0) society = r.rows[0];
+        } catch(e) {}
+      }
+    }
+
+    // Default society name
+    if (!society || !society.name) {
+      society = {
+        id:          user.society_id || 1,
+        name:        'SocietyPro',
+        plan:        'standard',
+        total_flats: 50,
+        city:        '',
+        state:       '',
+      };
+    }
+
+    // ── Generate Token ────────────────────────────────────────────────────────
     const token = jwt.sign(
-      { id: admin.id, email: admin.email, role: admin.role, name: admin.name },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+      { id: user.id, email: user.email, role, society_id: user.society_id || society.id },
+      JWT_SECRET,
+      { expiresIn: '30d' }
     );
 
-    res.json({
+    console.log(`✅ Login successful: ${email} | Role: ${role} | Society: ${society.name}`);
+
+    return res.json({
       success: true,
       token,
-      admin: { id: admin.id, name: admin.name, email: admin.email, role: admin.role, phone: admin.phone },
+      user: {
+        id:    user.id,
+        name:  user.name || user.secretary_name || 'Admin',
+        email: user.email,
+        role,
+        phone: user.phone || '',
+      },
+      society: {
+        id:          society.id,
+        name:        society.name || 'SocietyPro',
+        plan:        society.plan || 'standard',
+        total_flats: society.total_flats || 50,
+        city:        society.city || '',
+        state:       society.state || '',
+      },
     });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+
+  } catch(err) {
+    console.error('❌ Login error:', err.message);
+    return res.status(500).json({ success:false, message:'Server error. Please try again.' });
   }
 });
 
-// ── POST /api/auth/register (first-time setup only) ────────────────────────
-router.post('/register', async (req, res) => {
+// ── GET /api/auth/me ───────────────────────────────────────────────────────────
+router.get('/me', async (req, res) => {
   try {
-    const { name, email, password, phone, role } = req.body;
-    if (!name || !email || !password)
-      return res.status(400).json({ success: false, message: 'Name, email and password are required.' });
-
-    const existing = await pool.query('SELECT id FROM admins WHERE email = $1', [email]);
-    if (existing.rows.length)
-      return res.status(400).json({ success: false, message: 'Email already registered.' });
-
-    const hash = await bcrypt.hash(password, 10);
-    const { rows } = await pool.query(
-      `INSERT INTO admins (name, email, password, phone, role)
-       VALUES ($1,$2,$3,$4,$5) RETURNING id, name, email, role`,
-      [name, email, hash, phone, role || 'secretary']
-    );
-
-    res.status(201).json({ success: true, admin: rows[0] });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// ── GET /api/auth/me ────────────────────────────────────────────────────────
-router.get('/me', auth, async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      'SELECT id, name, email, role, phone, avatar_url, created_at FROM admins WHERE id = $1',
-      [req.admin.id]
-    );
-    if (!rows.length) return res.status(404).json({ success: false, message: 'Admin not found.' });
-    res.json({ success: true, admin: rows[0] });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// ── PUT /api/auth/change-password ───────────────────────────────────────────
-router.put('/change-password', auth, async (req, res) => {
-  try {
-    const { currentPassword, newPassword } = req.body;
-    const { rows } = await pool.query('SELECT password FROM admins WHERE id = $1', [req.admin.id]);
-    const match = await bcrypt.compare(currentPassword, rows[0].password);
-    if (!match) return res.status(400).json({ success: false, message: 'Current password is incorrect.' });
-    const hash = await bcrypt.hash(newPassword, 10);
-    await pool.query('UPDATE admins SET password = $1, updated_at = NOW() WHERE id = $2', [hash, req.admin.id]);
-    res.json({ success: true, message: 'Password changed successfully.' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    const token   = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) return res.status(401).json({ success:false, message:'No token' });
+    const decoded = jwt.verify(token, JWT_SECRET);
+    res.json({ success:true, user: decoded });
+  } catch(e) {
+    res.status(401).json({ success:false, message:'Invalid token' });
   }
 });
 

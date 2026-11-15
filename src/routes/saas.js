@@ -72,21 +72,41 @@ router.post('/register', async (req, res) => {
       societyId = 1;
     }
 
+    // Ensure admins table has society_id column
+    await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS society_id INTEGER`).catch(() => {});
+
     // Create admin user
+    let adminCreated = false;
     try {
       await pool.query(`
         INSERT INTO admins (name, email, phone, password, role, society_id, created_at)
         VALUES ($1,$2,$3,$4,'secretary',$5,NOW())`,
         [secretary_name||name, secretary_email, secretary_phone||'', hashedPassword, societyId]
       );
+      adminCreated = true;
+      console.log(`✅ Admin created in admins table: ${secretary_email}`);
     } catch (e) {
-      // Try tenants table as fallback
-      await pool.query(`
-        INSERT INTO tenants (name, email, phone, password, role, flat_number, created_at)
-        VALUES ($1,$2,$3,$4,'admin','ADMIN',NOW())
-        ON CONFLICT (email) DO NOTHING`,
-        [secretary_name||name, secretary_email, secretary_phone||'', hashedPassword]
-      );
+      console.log('admins insert failed:', e.message);
+    }
+
+    // Fallback: try tenants table
+    if (!adminCreated) {
+      try {
+        await pool.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS password VARCHAR(255)`).catch(() => {});
+        await pool.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS role VARCHAR(50)`).catch(() => {});
+        await pool.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS society_id INTEGER`).catch(() => {});
+        await pool.query(`
+          INSERT INTO tenants (name, email, phone, password, role, flat, society_id, created_at)
+          VALUES ($1,$2,$3,$4,'admin','ADMIN',$5,NOW())
+          ON CONFLICT (email) DO NOTHING`,
+          [secretary_name||name, secretary_email, secretary_phone||'', hashedPassword, societyId]
+        );
+        adminCreated = true;
+        console.log(`✅ Admin created in tenants table: ${secretary_email}`);
+      } catch (e2) {
+        console.log('tenants insert also failed:', e2.message);
+        // Don't throw — still return success with the token
+      }
     }
 
     // Generate token

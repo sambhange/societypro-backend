@@ -161,6 +161,112 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// ── POST /api/auth/resident-login ─────────────────────────────────────────────
+router.post('/resident-login', async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ success: false, message: 'Email and password are required' });
+  }
+
+  console.log(`🏠 Resident login attempt: ${email}`);
+
+  try {
+    // Ensure tenants has a password column (safe to run repeatedly)
+    await pool.query(`
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS password VARCHAR(255);
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS society_id INTEGER;
+    `).catch(() => {}); // ignore if fails (e.g. permissions)
+
+    // Find tenant by email
+    let result;
+    try {
+      result = await pool.query(
+        `SELECT t.*, s.name as society_name
+         FROM tenants t
+         LEFT JOIN societies s ON t.society_id = s.id
+         WHERE LOWER(t.email) = LOWER($1) LIMIT 1`,
+        [email.trim()]
+      );
+    } catch(e) {
+      // societies join might fail — try without it
+      result = await pool.query(
+        `SELECT * FROM tenants WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+        [email.trim()]
+      );
+    }
+
+    if (result.rows.length === 0) {
+      console.log(`❌ Resident not found: ${email}`);
+      return res.status(401).json({
+        success: false,
+        message: 'No resident account found with this email. Please contact your society admin.',
+      });
+    }
+
+    const tenant = result.rows[0];
+
+    // Verify password:
+    // 1. If password column exists and is set → check it (bcrypt or plaintext)
+    // 2. Fallback: flat number is the default password (e.g. "A-101" or "101")
+    let passwordMatch = false;
+
+    if (tenant.password) {
+      if (tenant.password.startsWith('$2')) {
+        passwordMatch = await bcrypt.compare(password, tenant.password);
+      } else {
+        passwordMatch = tenant.password === password;
+      }
+    }
+
+    // Flat number fallback (default password for residents without one set)
+    if (!passwordMatch && tenant.flat) {
+      passwordMatch = password === tenant.flat || password === tenant.flat.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
+    }
+
+    // Phone number fallback
+    if (!passwordMatch && tenant.phone) {
+      passwordMatch = password === tenant.phone;
+    }
+
+    if (!passwordMatch) {
+      console.log(`❌ Wrong password for resident: ${email}`);
+      return res.status(401).json({
+        success: false,
+        message: 'Incorrect password. Default password is your flat number (e.g. A-101).',
+      });
+    }
+
+    // Generate token
+    const token = jwt.sign(
+      { id: tenant.id, email: tenant.email, role: 'resident', society_id: tenant.society_id },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    console.log(`✅ Resident login: ${email} | Flat: ${tenant.flat}`);
+
+    return res.json({
+      success:  true,
+      token,
+      userType: 'resident',
+      user: {
+        id:         tenant.id,
+        name:       tenant.name,
+        email:      tenant.email,
+        flat:       tenant.flat,
+        phone:      tenant.phone || '',
+        society_id: tenant.society_id,
+        society:    tenant.society_name || 'SocietyPro',
+      },
+    });
+
+  } catch (err) {
+    console.error('❌ Resident login error:', err.message);
+    return res.status(500).json({ success: false, message: 'Server error. Please try again.' });
+  }
+});
+
 // ── GET /api/auth/me ───────────────────────────────────────────────────────────
 router.get('/me', async (req, res) => {
   try {

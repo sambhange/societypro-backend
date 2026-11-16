@@ -23,7 +23,7 @@ router.post('/login', async (req, res) => {
 
     // ── Check ALL possible tables ─────────────────────────────────────────────
 
-    // 1. Check admins table
+    // 1. Check admins table (try with societies JOIN first, fall back to plain query)
     try {
       const r = await pool.query(
         `SELECT a.*, s.name as society_name, s.id as soc_id, s.plan, s.total_flats, s.city, s.state
@@ -36,9 +36,23 @@ router.post('/login', async (req, res) => {
         user    = r.rows[0];
         role    = user.role || 'secretary';
         society = { id: user.soc_id, name: user.society_name, plan: user.plan, total_flats: user.total_flats, city: user.city, state: user.state };
-        console.log(`✅ Found in admins table`);
+        console.log(`✅ Found in admins table (with society)`);
       }
-    } catch(e) { console.log('admins check:', e.message); }
+    } catch(e) {
+      console.log('admins+societies join failed, trying plain admins:', e.message);
+      // societies table may not exist yet — query admins alone
+      try {
+        const r = await pool.query(
+          `SELECT * FROM admins WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+          [email.trim()]
+        );
+        if (r.rows.length > 0) {
+          user = r.rows[0];
+          role = user.role || 'secretary';
+          console.log(`✅ Found in admins table (no society join)`);
+        }
+      } catch(e2) { console.log('admins plain check failed:', e2.message); }
+    }
 
     // 2. Check tenants table with admin role
     if (!user) {
@@ -135,9 +149,13 @@ router.post('/login', async (req, res) => {
 
     console.log(`✅ Login successful: ${email} | Role: ${role} | Society: ${society.name}`);
 
+    // Map role to userType for frontend cookie
+    const userType = role === 'superadmin' ? 'super_admin' : 'admin';
+
     return res.json({
       success: true,
       token,
+      userType,
       user: {
         id:    user.id,
         name:  user.name || user.secretary_name || 'Admin',

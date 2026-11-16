@@ -93,13 +93,12 @@ async function setupDatabase() {
         SELECT FROM information_schema.tables 
         WHERE table_schema='public' AND table_name='tenants'
       )`);
+    // Always run setup and setup-saas (they use IF NOT EXISTS so safe to re-run)
+    console.log('📦 Ensuring all tables exist...');
+    try { const s=require('./db/setup');    await (typeof s==='function'?s():Promise.resolve()); console.log('✅ Tables done!'); }    catch(e){ console.log('⚠️ setup:',e.message); }
+    try { const s=require('./db/setup-saas'); await (typeof s==='function'?s():Promise.resolve()); console.log('✅ SaaS done!'); }  catch(e){ console.log('⚠️ saas:',e.message); }
     if (!check.rows[0].exists) {
-      console.log('📦 Setting up database...');
-      try { const s=require('./db/setup');    await (typeof s==='function'?s():Promise.resolve()); console.log('✅ Tables done!'); }    catch(e){ console.log('⚠️ setup:',e.message); }
-      try { const s=require('./db/setup-saas'); await (typeof s==='function'?s():Promise.resolve()); console.log('✅ SaaS done!'); }  catch(e){ console.log('⚠️ saas:',e.message); }
-      try { const s=require('./db/seed');     await (typeof s==='function'?s():Promise.resolve()); console.log('✅ Seed done!'); }     catch(e){ console.log('⚠️ seed:',e.message); }
-    } else {
-      console.log('✅ Database already set up!');
+      try { const s=require('./db/seed'); await (typeof s==='function'?s():Promise.resolve()); console.log('✅ Seed done!'); } catch(e){ console.log('⚠️ seed:',e.message); }
     }
   } catch(e) {
     console.error('⚠️ DB error:', e.message);

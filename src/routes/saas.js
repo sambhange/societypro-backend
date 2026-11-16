@@ -55,63 +55,78 @@ router.post('/register', async (req, res) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create society
+    // Create society — slug = lowercase name with dashes + timestamp for uniqueness
     let societyId;
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '-' + Date.now();
     try {
       const societyResult = await pool.query(`
-        INSERT INTO societies (name, address, city, state, pincode, reg_number, established, total_flats, wings, maintenance_amount, status, plan, created_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active',$11,NOW())
+        INSERT INTO societies (
+          name, slug, address, city, state, pincode, total_flats, wings,
+          secretary_name, secretary_email, secretary_phone, password,
+          status, plan, created_at
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'trial',$13,NOW())
         RETURNING id`,
-        [name, address||'', city||'', state||'', pincode||'', reg_number||'', established||'', 
-         parseInt(total_flats)||50, wings||'A', parseInt(maintenance_amount)||2500, plan_slug||'starter']
+        [
+          name, slug,
+          address||'', city||'', state||'', pincode||'',
+          parseInt(total_flats)||50, wings||'A',
+          secretary_name||name, secretary_email, secretary_phone||'', hashedPassword,
+          plan_slug||'starter'
+        ]
       );
       societyId = societyResult.rows[0].id;
+      console.log(`✅ Society created: ${name} (id=${societyId})`);
     } catch (e) {
-      // If societies table doesn't exist, create admin directly
-      console.log('Societies table not found, creating admin only');
-      societyId = 1;
+      console.log('Society insert failed:', e.message, '— creating admin without society');
+      societyId = null;
     }
 
     // Ensure admins table has society_id column
     await pool.query(`ALTER TABLE admins ADD COLUMN IF NOT EXISTS society_id INTEGER`).catch(() => {});
 
     // Create admin user
-    let adminCreated = false;
+    let adminId = null;
     try {
-      await pool.query(`
+      const adminResult = await pool.query(`
         INSERT INTO admins (name, email, phone, password, role, society_id, created_at)
-        VALUES ($1,$2,$3,$4,'secretary',$5,NOW())`,
+        VALUES ($1,$2,$3,$4,'secretary',$5,NOW())
+        RETURNING id`,
         [secretary_name||name, secretary_email, secretary_phone||'', hashedPassword, societyId]
       );
-      adminCreated = true;
-      console.log(`✅ Admin created in admins table: ${secretary_email}`);
+      adminId = adminResult.rows[0].id;
+      console.log(`✅ Admin created in admins table: ${secretary_email} (id=${adminId})`);
     } catch (e) {
       console.log('admins insert failed:', e.message);
     }
 
     // Fallback: try tenants table
-    if (!adminCreated) {
+    if (!adminId) {
       try {
         await pool.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS password VARCHAR(255)`).catch(() => {});
         await pool.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS role VARCHAR(50)`).catch(() => {});
         await pool.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS society_id INTEGER`).catch(() => {});
-        await pool.query(`
+        const tenantResult = await pool.query(`
           INSERT INTO tenants (name, email, phone, password, role, flat, society_id, created_at)
           VALUES ($1,$2,$3,$4,'admin','ADMIN',$5,NOW())
-          ON CONFLICT (email) DO NOTHING`,
+          ON CONFLICT (email) DO NOTHING
+          RETURNING id`,
           [secretary_name||name, secretary_email, secretary_phone||'', hashedPassword, societyId]
         );
-        adminCreated = true;
+        if (tenantResult.rows.length > 0) adminId = tenantResult.rows[0].id;
         console.log(`✅ Admin created in tenants table: ${secretary_email}`);
       } catch (e2) {
         console.log('tenants insert also failed:', e2.message);
-        // Don't throw — still return success with the token
       }
     }
 
-    // Generate token
+    if (!adminId) {
+      return res.status(500).json({ success: false, message: 'Could not create admin account. Please try again.' });
+    }
+
+    // Generate token using admin's real ID
     const token = jwt.sign(
-      { id: societyId, email: secretary_email, role: 'secretary' },
+      { id: adminId, email: secretary_email, role: 'secretary', society_id: societyId },
       process.env.JWT_SECRET || 'societypro-secret-2025',
       { expiresIn: '30d' }
     );

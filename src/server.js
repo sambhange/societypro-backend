@@ -101,7 +101,10 @@ async function setupDatabase() {
       try { const s=require('./db/seed'); await (typeof s==='function'?s():Promise.resolve()); console.log('✅ Seed done!'); } catch(e){ console.log('⚠️ seed:',e.message); }
     }
   } catch(e) {
-    console.error('⚠️ DB error:', e.message);
+    console.error('⚠️ DB error:', e.message || JSON.stringify(e) || String(e));
+    console.error('⚠️ DB error code:', e.code);
+    console.error('⚠️ DATABASE_URL set:', !!process.env.DATABASE_URL);
+    console.error('⚠️ DATABASE_URL prefix:', (process.env.DATABASE_URL||'').substring(0,30));
     console.log('⚠️ Check DATABASE_URL in Railway Variables!');
   }
 }

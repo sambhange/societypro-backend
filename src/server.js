@@ -103,8 +103,12 @@ async function setupDatabase() {
   } catch(e) {
     console.error('⚠️ DB error:', e.message || JSON.stringify(e) || String(e));
     console.error('⚠️ DB error code:', e.code);
-    console.error('⚠️ DATABASE_URL set:', !!process.env.DATABASE_URL);
-    console.error('⚠️ DATABASE_URL prefix:', (process.env.DATABASE_URL||'').substring(0,30));
+    try {
+      const u = new URL(process.env.DATABASE_URL || '');
+      console.error('⚠️ DB host:', u.hostname, '| port:', u.port || '5432');
+    } catch(_) {
+      console.error('⚠️ DATABASE_URL prefix:', (process.env.DATABASE_URL||'').substring(0,40));
+    }
     console.log('⚠️ Check DATABASE_URL in Railway Variables!');
   }
 }

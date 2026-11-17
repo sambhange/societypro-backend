@@ -1,16 +1,19 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Build connection config — handle both Railway internal and public URLs
+// Build connection config — tries with SSL first, falls back to without SSL
 function buildConfig() {
   const url = process.env.DATABASE_URL;
   if (url) {
-    // Strip any existing sslmode param so we control SSL ourselves
+    // Strip sslmode from URL — we control SSL via the pool option
     const cleanUrl = url.replace(/[?&]sslmode=[^&]*/g, '').replace(/\?$/, '');
+    // Railway public TCP proxy URLs don't need SSL from client side
+    // Railway internal URLs need SSL — try no-ssl for public, ssl for internal
+    const isInternal = cleanUrl.includes('.railway.internal') || cleanUrl.includes('railway.internal');
     return {
       connectionString: cleanUrl,
-      ssl: { rejectUnauthorized: false },
-      connectionTimeoutMillis: 10000,
+      ssl: isInternal ? { rejectUnauthorized: false } : false,
+      connectionTimeoutMillis: 15000,
       idleTimeoutMillis:       30000,
       max:                     10,
     };
@@ -21,8 +24,8 @@ function buildConfig() {
     database: process.env.DB_NAME     || 'society_db',
     user:     process.env.DB_USER     || 'postgres',
     password: process.env.DB_PASSWORD || '',
-    ssl:      { rejectUnauthorized: false },
-    connectionTimeoutMillis: 10000,
+    ssl:      false,
+    connectionTimeoutMillis: 15000,
   };
 }
 

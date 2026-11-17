@@ -1,23 +1,39 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Build connection config — always use SSL for Railway postgres-ssl image
+// Build connection config — parse URL into individual params to avoid
+// pg connection-string SSL quirks with Railway's postgres-ssl image
 function buildConfig() {
   const url = process.env.DATABASE_URL;
   if (url) {
-    // Strip sslmode from URL — we control SSL via the pool option
-    const cleanUrl = url.replace(/[?&]sslmode=[^&]*/g, '').replace(/\?$/, '');
-    // Always require SSL — Railway's postgres-ssl image mandates SSL for all connections
-    return {
-      connectionString: cleanUrl,
-      ssl: {
+    try {
+      const parsed = new URL(url);
+      const sslConfig = {
         rejectUnauthorized: false,
         checkServerIdentity: () => undefined,
-      },
-      connectionTimeoutMillis: 15000,
-      idleTimeoutMillis:       30000,
-      max:                     10,
-    };
+      };
+      return {
+        host:     parsed.hostname,
+        port:     parseInt(parsed.port) || 5432,
+        user:     parsed.username,
+        password: decodeURIComponent(parsed.password || ''),
+        database: parsed.pathname.replace(/^\//, ''),
+        ssl:      sslConfig,
+        connectionTimeoutMillis: 15000,
+        idleTimeoutMillis:       30000,
+        max:                     10,
+      };
+    } catch (e) {
+      console.warn('⚠️ Could not parse DATABASE_URL, using connection string:', e.message);
+      const cleanUrl = url.replace(/[?&]sslmode=[^&]*/g, '').replace(/\?$/, '');
+      return {
+        connectionString: cleanUrl,
+        ssl: { rejectUnauthorized: false, checkServerIdentity: () => undefined },
+        connectionTimeoutMillis: 15000,
+        idleTimeoutMillis:       30000,
+        max:                     10,
+      };
+    }
   }
   return {
     host:     process.env.DB_HOST     || 'localhost',

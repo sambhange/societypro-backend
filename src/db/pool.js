@@ -11,6 +11,10 @@ function buildConfig() {
       const sslConfig = {
         rejectUnauthorized: false,
         checkServerIdentity: () => undefined,
+        // Lower OpenSSL security level to allow self-signed certs with smaller keys
+        // (postgres-ssl:18 may generate keys that Node.js 18 / OpenSSL 3 rejects by default)
+        ciphers: 'DEFAULT:@SECLEVEL=0',
+        secureOptions: require('constants').SSL_OP_LEGACY_SERVER_CONNECT,
       };
       return {
         host:     parsed.hostname,

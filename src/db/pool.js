@@ -8,14 +8,9 @@ function buildConfig() {
   if (url) {
     try {
       const parsed = new URL(url);
-      const sslConfig = {
-        rejectUnauthorized: false,
-        checkServerIdentity: () => undefined,
-        // Lower OpenSSL security level to allow self-signed certs with smaller keys
-        // (postgres-ssl:18 may generate keys that Node.js 18 / OpenSSL 3 rejects by default)
-        ciphers: 'DEFAULT:@SECLEVEL=0',
-        secureOptions: require('constants').SSL_OP_LEGACY_SERVER_CONNECT,
-      };
+      // Railway postgres-ssl:18 uses a self-signed cert — bypass ALL TLS validation
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+      const sslConfig = { rejectUnauthorized: false };
       return {
         host:     parsed.hostname,
         port:     parseInt(parsed.port) || 5432,

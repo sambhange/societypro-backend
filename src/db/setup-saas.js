@@ -149,4 +149,7 @@ const setupSaaS = async () => {
   }
 };
 
-setupSaaS().then(() => process.exit(0)).catch(() => process.exit(1));
+module.exports = setupSaaS;
+if (require.main === module) {
+  setupSaaS().then(() => process.exit(0)).catch(() => process.exit(1));
+}

@@ -117,4 +117,7 @@ const seed = async () => {
   }
 };
 
-seed().then(() => process.exit(0)).catch(() => process.exit(1));
+module.exports = seed;
+if (require.main === module) {
+  seed().then(() => process.exit(0)).catch(() => process.exit(1));
+}

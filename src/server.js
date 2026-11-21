@@ -59,17 +59,46 @@ app.use('/api/super',         safeRoute('./routes/super'));
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 app.get('/api/dashboard', async (req, res) => {
   try {
-    const t  = await pool.query('SELECT COUNT(*) FROM tenants').catch(()=>({rows:[{count:0}]}));
-    const m  = await pool.query("SELECT COUNT(*) FROM maintenance WHERE status='Pending'").catch(()=>({rows:[{count:0}]}));
-    const c  = await pool.query("SELECT COUNT(*) FROM complaints WHERE status='Open'").catch(()=>({rows:[{count:0}]}));
-    const p  = await pool.query("SELECT COALESCE(SUM(amount),0) as total FROM payments").catch(()=>({rows:[{total:0}]}));
+    // Extract society_id from JWT if present
+    let society_id = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      try {
+        const jwt = require('jsonwebtoken');
+        const decoded = jwt.verify(authHeader.slice(7), process.env.JWT_SECRET || 'societypro-secret-2025');
+        society_id = decoded.society_id;
+      } catch(_) {}
+    }
+
+    // Filter by society_id when available
+    const sid = society_id;
+    const where = sid ? ' WHERE society_id = $1' : '';
+    const args  = sid ? [sid] : [];
+
+    const t = await pool.query(`SELECT COUNT(*) FROM tenants${where}`,        args).catch(()=>({rows:[{count:0}]}));
+    const m = await pool.query(`SELECT COUNT(*) FROM maintenance${where} ${sid ? "AND status='Pending'" : "WHERE status='Pending'"}`, args).catch(()=>({rows:[{count:0}]}));
+    const c = await pool.query(`SELECT COUNT(*) FROM complaints${where} ${sid ? "AND status='Open'" : "WHERE status='Open'"}`,         args).catch(()=>({rows:[{count:0}]}));
+    const p = await pool.query(`SELECT COALESCE(SUM(amount),0) as total FROM payments${where}`, args).catch(()=>({rows:[{total:0}]}));
+
+    // Get society info for total_flats
+    let total_flats = 50;
+    if (sid) {
+      const soc = await pool.query('SELECT total_flats FROM societies WHERE id=$1', [sid]).catch(()=>({rows:[]}));
+      if (soc.rows.length > 0) total_flats = soc.rows[0].total_flats || 50;
+    }
+
+    const paid    = parseInt(t.rows[0].count) || 0;
+    const pending = parseInt(m.rows[0].count) || 0;
+    const collected = parseFloat(p.rows[0].total) || 0;
+    const rate = total_flats > 0 ? Math.round((paid / total_flats) * 100) : 0;
+
     res.json({ success:true, stats:{
-      total_tenants:   parseInt(t.rows[0].count)||0,
-      pending_dues:    parseInt(m.rows[0].count)||0,
+      total_tenants:   paid,
+      pending_dues:    pending,
       open_complaints: parseInt(c.rows[0].count)||0,
-      total_collected: parseFloat(p.rows[0].total)||0,
-      collection_rate: 88,
-      total_flats: 48,
+      total_collected: collected,
+      collection_rate: Math.min(rate, 100),
+      total_flats,
     }});
   } catch(e) {
     res.json({ success:true, stats:{ total_tenants:0,pending_dues:0,open_complaints:0,total_collected:0,collection_rate:0,total_flats:0 }});

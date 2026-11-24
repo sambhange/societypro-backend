@@ -28,6 +28,7 @@ const router  = express.Router();
 // GET /api/complaints
 router.get('/', auth, async (req, res) => {
   try {
+    const society_id = req.user?.society_id;
     const { status, category, priority, flat } = req.query;
     let query = `
       SELECT c.*, COUNT(r.id)::int AS reply_count
@@ -35,6 +36,7 @@ router.get('/', auth, async (req, res) => {
       LEFT JOIN complaint_replies r ON r.complaint_id = c.id
       WHERE 1=1`;
     const params = [];
+    if (society_id) { params.push(society_id); query += ` AND c.society_id = $${params.length}`; }
     if (status)   { params.push(status);   query += ` AND c.status = $${params.length}`; }
     if (category) { params.push(category); query += ` AND c.category = $${params.length}`; }
     if (priority) { params.push(priority); query += ` AND c.priority = $${params.length}`; }
@@ -66,19 +68,32 @@ router.get('/:id', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
-// POST /api/complaints  — raise new complaint (public — any resident)
+// POST /api/complaints  — raise new complaint (admin or resident)
 router.post('/', async (req, res) => {
   try {
-    const { flat, name, category, title, description, priority } = req.body;
+    const { flat, name, category, title, description, priority, society_id: bodySocietyId } = req.body;
     if (!flat || !title) return res.status(400).json({ success: false, message: 'Flat and title required.' });
+
+    // Try to get society_id from JWT (if authenticated) or body
+    let society_id = bodySocietyId || null;
+    try {
+      const jwt = require('jsonwebtoken');
+      const authHeader = req.headers.authorization;
+      if (authHeader?.startsWith('Bearer ')) {
+        const decoded = jwt.verify(authHeader.slice(7), process.env.JWT_SECRET || 'societypro-secret-2025');
+        society_id = decoded.society_id || society_id;
+      }
+    } catch(_) {}
+
+    await pool.query(`ALTER TABLE complaints ADD COLUMN IF NOT EXISTS society_id INTEGER`).catch(()=>{});
 
     const count = await pool.query('SELECT COUNT(*) FROM complaints');
     const ticketNo = `TKT${String(Number(count.rows[0].count) + 1).padStart(3, '0')}`;
 
     const { rows } = await pool.query(
-      `INSERT INTO complaints (ticket_no, flat, name, category, title, description, priority)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [ticketNo, flat, name, category || 'other', title, description, priority || 'Medium']
+      `INSERT INTO complaints (ticket_no, flat, name, category, title, description, priority, society_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [ticketNo, flat, name, category || 'other', title, description, priority || 'Medium', society_id]
     );
     res.status(201).json({ success: true, complaint: rows[0] });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }

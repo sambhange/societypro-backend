@@ -6,10 +6,12 @@ const router  = express.Router();
 // GET /api/maintenance?month=April 2025
 router.get('/', auth, async (req, res) => {
   try {
+    const society_id = req.user?.society_id;
     const { month, status, flat } = req.query;
     let query = 'SELECT * FROM maintenance WHERE 1=1';
     const params = [];
 
+    if (society_id) { params.push(society_id); query += ` AND society_id = $${params.length}`; }
     if (month)  { params.push(month);   query += ` AND month = $${params.length}`; }
     if (status) { params.push(status);  query += ` AND status = $${params.length}`; }
     if (flat)   { params.push(flat);    query += ` AND flat ILIKE $${params.length}`; }
@@ -48,11 +50,13 @@ router.post('/', auth, async (req, res) => {
   try {
     const { tenant_id, flat, name, month, amount, mode, notes } = req.body;
     if (!flat || !month) return res.status(400).json({ success: false, message: 'Flat and month required.' });
+    const society_id = req.user?.society_id || null;
+    await pool.query(`ALTER TABLE maintenance ADD COLUMN IF NOT EXISTS society_id INTEGER`).catch(()=>{});
 
     const { rows } = await pool.query(
-      `INSERT INTO maintenance (tenant_id, flat, name, month, amount, mode, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [tenant_id, flat, name, month, amount || 2500, mode, notes]
+      `INSERT INTO maintenance (tenant_id, flat, name, month, amount, mode, notes, society_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [tenant_id, flat, name, month, amount || 2500, mode, notes, society_id]
     );
     res.status(201).json({ success: true, record: rows[0] });
   } catch (err) {
@@ -66,10 +70,19 @@ router.post('/bulk-generate', auth, async (req, res) => {
     const { month, amount = 2500 } = req.body;
     if (!month) return res.status(400).json({ success: false, message: 'Month is required.' });
 
-    const existing = await pool.query('SELECT flat FROM maintenance WHERE month = $1', [month]);
+    const society_id = req.user?.society_id;
+    await pool.query(`ALTER TABLE maintenance ADD COLUMN IF NOT EXISTS society_id INTEGER`).catch(()=>{});
+
+    const existing = await pool.query(
+      society_id ? 'SELECT flat FROM maintenance WHERE month = $1 AND society_id = $2' : 'SELECT flat FROM maintenance WHERE month = $1',
+      society_id ? [month, society_id] : [month]
+    );
     const existingFlats = new Set(existing.rows.map(r => r.flat));
 
-    const tenants = await pool.query("SELECT id, flat, name FROM tenants WHERE status = 'Active'");
+    const tenants = await pool.query(
+      society_id ? "SELECT id, flat, name FROM tenants WHERE status = 'Active' AND society_id = $1" : "SELECT id, flat, name FROM tenants WHERE status = 'Active'",
+      society_id ? [society_id] : []
+    );
     const newRecords = tenants.rows.filter(t => !existingFlats.has(t.flat));
 
     if (!newRecords.length) {

@@ -3,12 +3,20 @@ const pool    = require('../db/pool');
 const auth    = require('../middleware/auth');
 const router  = express.Router();
 
-// GET /api/tenants — list all with search and filter
+// GET /api/tenants — list ONLY this society's tenants
 router.get('/', auth, async (req, res) => {
   try {
+    const society_id = req.user?.society_id;
     const { search = '', status = '', wing = '' } = req.query;
+
     let query  = 'SELECT * FROM tenants WHERE 1=1';
     const params = [];
+
+    // Always scope by society_id
+    if (society_id) {
+      params.push(society_id);
+      query += ` AND society_id = $${params.length}`;
+    }
 
     if (search) {
       params.push(`%${search}%`);
@@ -25,10 +33,15 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
-// GET /api/tenants/:id
+// GET /api/tenants/:id — only if belongs to same society
 router.get('/:id', auth, async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM tenants WHERE id = $1', [req.params.id]);
+    const society_id = req.user?.society_id;
+    const query = society_id
+      ? 'SELECT * FROM tenants WHERE id = $1 AND society_id = $2'
+      : 'SELECT * FROM tenants WHERE id = $1';
+    const params = society_id ? [req.params.id, society_id] : [req.params.id];
+    const { rows } = await pool.query(query, params);
     if (!rows.length) return res.status(404).json({ success: false, message: 'Tenant not found.' });
     res.json({ success: true, tenant: rows[0] });
   } catch (err) {
@@ -42,7 +55,6 @@ router.post('/', auth, async (req, res) => {
     const { flat, name, phone, email, members, status, join_date, aadhaar, notes, password } = req.body;
     if (!flat || !name) return res.status(400).json({ success: false, message: 'Flat and name are required.' });
 
-    // Get society_id from JWT token
     const society_id = req.user?.society_id || null;
 
     // Ensure tenants table has needed columns
@@ -69,16 +81,24 @@ router.post('/', auth, async (req, res) => {
   }
 });
 
-// PUT /api/tenants/:id
+// PUT /api/tenants/:id — only if belongs to same society
 router.put('/:id', auth, async (req, res) => {
   try {
+    const society_id = req.user?.society_id;
     const { flat, name, phone, email, members, status, aadhaar, notes } = req.body;
-    const { rows } = await pool.query(
-      `UPDATE tenants SET flat=$1, name=$2, phone=$3, email=$4, members=$5,
-       status=$6, aadhaar=$7, notes=$8, updated_at=NOW()
-       WHERE id=$9 RETURNING *`,
-      [flat, name, phone, email, members, status, aadhaar, notes, req.params.id]
-    );
+
+    const query = society_id
+      ? `UPDATE tenants SET flat=$1, name=$2, phone=$3, email=$4, members=$5,
+         status=$6, aadhaar=$7, notes=$8, updated_at=NOW()
+         WHERE id=$9 AND society_id=$10 RETURNING *`
+      : `UPDATE tenants SET flat=$1, name=$2, phone=$3, email=$4, members=$5,
+         status=$6, aadhaar=$7, notes=$8, updated_at=NOW()
+         WHERE id=$9 RETURNING *`;
+    const params = society_id
+      ? [flat, name, phone, email, members, status, aadhaar, notes, req.params.id, society_id]
+      : [flat, name, phone, email, members, status, aadhaar, notes, req.params.id];
+
+    const { rows } = await pool.query(query, params);
     if (!rows.length) return res.status(404).json({ success: false, message: 'Tenant not found.' });
     res.json({ success: true, tenant: rows[0] });
   } catch (err) {
@@ -86,10 +106,15 @@ router.put('/:id', auth, async (req, res) => {
   }
 });
 
-// DELETE /api/tenants/:id
+// DELETE /api/tenants/:id — only if belongs to same society
 router.delete('/:id', auth, async (req, res) => {
   try {
-    const { rows } = await pool.query('DELETE FROM tenants WHERE id=$1 RETURNING id', [req.params.id]);
+    const society_id = req.user?.society_id;
+    const query = society_id
+      ? 'DELETE FROM tenants WHERE id=$1 AND society_id=$2 RETURNING id'
+      : 'DELETE FROM tenants WHERE id=$1 RETURNING id';
+    const params = society_id ? [req.params.id, society_id] : [req.params.id];
+    const { rows } = await pool.query(query, params);
     if (!rows.length) return res.status(404).json({ success: false, message: 'Tenant not found.' });
     res.json({ success: true, message: 'Tenant deleted.' });
   } catch (err) {
@@ -97,7 +122,7 @@ router.delete('/:id', auth, async (req, res) => {
   }
 });
 
-// GET /api/tenants/:id/maintenance — maintenance history for a tenant
+// GET /api/tenants/:id/maintenance
 router.get('/:id/maintenance', auth, async (req, res) => {
   try {
     const { rows } = await pool.query(

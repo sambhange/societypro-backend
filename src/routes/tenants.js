@@ -39,13 +39,28 @@ router.get('/:id', auth, async (req, res) => {
 // POST /api/tenants
 router.post('/', auth, async (req, res) => {
   try {
-    const { flat, name, phone, email, members, status, join_date, aadhaar, notes } = req.body;
+    const { flat, name, phone, email, members, status, join_date, aadhaar, notes, password } = req.body;
     if (!flat || !name) return res.status(400).json({ success: false, message: 'Flat and name are required.' });
 
+    // Get society_id from JWT token
+    const society_id = req.user?.society_id || null;
+
+    // Ensure tenants table has needed columns
+    await pool.query(`
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS society_id INTEGER;
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS password VARCHAR(255);
+    `).catch(() => {});
+
+    // Default password = flat number (e.g. "A-101")
+    const bcrypt = require('bcryptjs');
+    const hashedPassword = password
+      ? await bcrypt.hash(password, 10)
+      : await bcrypt.hash(flat, 10);
+
     const { rows } = await pool.query(
-      `INSERT INTO tenants (flat, name, phone, email, members, status, join_date, aadhaar, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [flat, name, phone, email, members || 1, status || 'Active', join_date || new Date(), aadhaar, notes]
+      `INSERT INTO tenants (flat, name, phone, email, members, status, join_date, aadhaar, notes, society_id, password)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [flat, name, phone, email, members || 1, status || 'Active', join_date || new Date(), aadhaar, notes, society_id, hashedPassword]
     );
     res.status(201).json({ success: true, tenant: rows[0] });
   } catch (err) {

@@ -182,35 +182,41 @@ router.post('/login', async (req, res) => {
 // ── POST /api/auth/resident-login ─────────────────────────────────────────────
 router.post('/resident-login', async (req, res) => {
   const { email, password } = req.body;
+  // 'email' field also accepts phone number or flat number
+  const identifier = (email || '').trim();
 
-  if (!email || !password) {
-    return res.status(400).json({ success: false, message: 'Email and password are required' });
+  if (!identifier || !password) {
+    return res.status(400).json({ success: false, message: 'Email/phone and password are required' });
   }
 
-  console.log(`🏠 Resident login attempt: ${email}`);
+  console.log(`🏠 Resident login attempt: ${identifier}`);
 
   try {
-    // Ensure tenants has a password column (safe to run repeatedly)
+    // Ensure tenants has needed columns
     await pool.query(`
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS password VARCHAR(255);
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS society_id INTEGER;
-    `).catch(() => {}); // ignore if fails (e.g. permissions)
+    `).catch(() => {});
 
-    // Find tenant by email
+    // Find tenant by email OR phone OR flat number
     let result;
     try {
       result = await pool.query(
         `SELECT t.*, s.name as society_name
          FROM tenants t
          LEFT JOIN societies s ON t.society_id = s.id
-         WHERE LOWER(t.email) = LOWER($1) LIMIT 1`,
-        [email.trim()]
+         WHERE LOWER(t.email) = LOWER($1)
+            OR t.phone = $1
+            OR LOWER(t.flat) = LOWER($1)
+         LIMIT 1`,
+        [identifier]
       );
     } catch(e) {
-      // societies join might fail — try without it
       result = await pool.query(
-        `SELECT * FROM tenants WHERE LOWER(email) = LOWER($1) LIMIT 1`,
-        [email.trim()]
+        `SELECT * FROM tenants
+         WHERE LOWER(email) = LOWER($1) OR phone = $1 OR LOWER(flat) = LOWER($1)
+         LIMIT 1`,
+        [identifier]
       );
     }
 

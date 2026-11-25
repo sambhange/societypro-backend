@@ -129,6 +129,22 @@ async function setupDatabase() {
     if (!check.rows[0].exists) {
       try { const s=require('./db/seed'); await (typeof s==='function'?s():Promise.resolve()); console.log('✅ Seed done!'); } catch(e){ console.log('⚠️ seed:',e.message); }
     }
+
+    // ── Auto-create default super admin if none exists ────────────────────────
+    try {
+      const bcrypt = require('bcryptjs');
+      const existing = await pool.query('SELECT COUNT(*) FROM super_admins').catch(()=>({rows:[{count:'1'}]}));
+      if (Number(existing.rows[0].count) === 0) {
+        const hash = await bcrypt.hash('SuperAdmin@2025', 10);
+        await pool.query(
+          `INSERT INTO super_admins (name, email, password) VALUES ($1,$2,$3)`,
+          ['SocietyPro Admin', 'admin@societyproapp.com', hash]
+        );
+        console.log('✅ Super admin created: admin@societyproapp.com / SuperAdmin@2025');
+      } else {
+        console.log('✅ Super admin already exists');
+      }
+    } catch(e) { console.log('⚠️ Super admin setup:', e.message); }
   } catch(e) {
     console.error('⚠️ DB error:', e.message || JSON.stringify(e) || String(e));
     console.error('⚠️ DB error code:', e.code);
